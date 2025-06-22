@@ -67,18 +67,38 @@ sudo apt-get update
 sudo apt-get install -y apt-transport-https filebeat
 sudo systemctl enable filebeat
 
-# === Phase 5: Configure Filebeat SSL Skip ===
-echo "🛠 手動設定 Filebeat：需要 sudo su 權限編輯 /etc/filebeat/filebeat.yml"
-echo "請加入："
-echo -e "ssl:\n  verification_mode: \"none\""
-echo "然後執行："
+# === Phase 5: Wait for Elasticsearch Ready ===
+echo "⏳ 等待 Elasticsearch 就緒..."
+ES_READY=false
+for i in {1..20}; do
+  STATUS=$(kubectl get pods | grep elasticsearch | awk '{print $2}')
+  if [[ "$STATUS" == "1/1" ]]; then
+    ES_READY=true
+    break
+  fi
+  echo "等待中 ($i)..."
+  sleep 10
+done
+if [[ "$ES_READY" == false ]]; then
+  echo "❌ Elasticsearch 未就緒，結束腳本"
+  exit 1
+fi
+
+# === Phase 6: Configure Filebeat ===
+echo "🔑 取得 elastic 使用者密碼"
+ELASTIC_PASS=$(kubectl get secret elasticsearch-master-credentials -o jsonpath="{.data.password}" | base64 --decode)
+echo "elastic 密碼為: $ELASTIC_PASS"
+
+echo "🛠 手動設定 Filebeat，需使用 sudo su 權限編輯 /etc/filebeat/filebeat.yml"
+echo "加入以下內容："
+echo -e "filebeat.inputs:\n  - type: log\n    enabled: true\n    paths:\n      - /var/log/*.log\n\noutput.elasticsearch:\n  hosts: [\"https://localhost:9200\"]\n  username: \"elastic\"\n  password: \"$ELASTIC_PASS\"\n  ssl:\n    verification_mode: \"none\""
+echo "然後執行以下命令："
 echo "sudo filebeat test config && sudo filebeat test output"
 echo "sudo systemctl restart filebeat"
-echo "🔐 請輸入 'sudo su' 取得 root 權限後再操作以上設定"
 read -rp "✅ 完成後請按 Enter 繼續..."
 
-# === Phase 6: Import Sample Data & Create API Key ===
-echo "🔑 Step 4: 匯入資料 & 建立 API Key"
+# === Phase 7: Import Sample Data & Create API Key ===
+echo "🔄 匯入測試資料並建立 API Key"
 cd elasticsearch
 bash go.sh
 bash create_api_key.sh > api_key_output.json
@@ -92,8 +112,8 @@ fi
 echo "🔐 Extracted API Key: $ENCODED_KEY"
 bash test_api_key.sh || echo "⚠️ test_api_key.sh 失敗"
 
-# === Phase 7: Import Dataset ===
-echo "🐍 Step 5: 匯入 Dataset"
+# === Phase 8: Import Dataset ===
+echo "🐍 匯入 Dataset"
 cd ../dataset
 source ../../.venv/bin/activate
 
