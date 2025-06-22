@@ -51,9 +51,22 @@ for CHART in "${!CHARTS[@]}"; do
     echo "⏳ 等待 $CHART 部署完成..."
     sleep 10
   fi
+  sleep 5
+  kubectl get pods | grep "$CHART"
 done
 
-kubectl get all -n default
+# === 等待 Elasticsearch 和 Kibana 就緒 ===
+echo "⏳ 等待 Elasticsearch 與 Kibana 就緒..."
+for i in {1..20}; do
+  ES_STATUS=$(kubectl get pods | grep elasticsearch | awk '{print $2}' | grep -c '1/1')
+  KB_STATUS=$(kubectl get pods | grep kibana | awk '{print $2}' | grep -c '1/1')
+  if [[ "$ES_STATUS" -ge 1 && "$KB_STATUS" -ge 1 ]]; then
+    echo "✅ Elasticsearch 與 Kibana 就緒"
+    break
+  fi
+  echo "等待中 ($i)..."
+  sleep 10
+done
 
 # === Phase 4: Install Filebeat on Host ===
 echo "📥 Step 3: 安裝 Filebeat (APT)"
@@ -67,24 +80,7 @@ sudo apt-get update
 sudo apt-get install -y apt-transport-https filebeat
 sudo systemctl enable filebeat
 
-# === Phase 5: Wait for Elasticsearch Ready ===
-echo "⏳ 等待 Elasticsearch 就緒..."
-ES_READY=false
-for i in {1..20}; do
-  STATUS=$(kubectl get pods | grep elasticsearch | awk '{print $2}')
-  if [[ "$STATUS" == "1/1" ]]; then
-    ES_READY=true
-    break
-  fi
-  echo "等待中 ($i)..."
-  sleep 10
-done
-if [[ "$ES_READY" == false ]]; then
-  echo "❌ Elasticsearch 未就緒，結束腳本"
-  exit 1
-fi
-
-# === Phase 6: Configure Filebeat ===
+# === Phase 5: Configure Filebeat ===
 echo "🔑 取得 elastic 使用者密碼"
 ELASTIC_PASS=$(kubectl get secret elasticsearch-master-credentials -o jsonpath="{.data.password}" | base64 --decode)
 echo "elastic 密碼為: $ELASTIC_PASS"
@@ -97,7 +93,12 @@ echo "sudo filebeat test config && sudo filebeat test output"
 echo "sudo systemctl restart filebeat"
 read -rp "✅ 完成後請按 Enter 繼續..."
 
-# === Phase 7: Import Sample Data & Create API Key ===
+# ✅ 驗證設定
+echo "⚙️ 驗證 Filebeat 設定..."
+sudo filebeat test config || { echo "❌ Filebeat config 有誤"; exit 1; }
+sudo filebeat test output | grep -q "Connection ok" || { echo "❌ Filebeat output 驗證失敗"; exit 1; }
+
+# === Phase 6: Import Sample Data & Create API Key ===
 echo "🔄 匯入測試資料並建立 API Key"
 cd elasticsearch
 bash go.sh
@@ -112,7 +113,7 @@ fi
 echo "🔐 Extracted API Key: $ENCODED_KEY"
 bash test_api_key.sh || echo "⚠️ test_api_key.sh 失敗"
 
-# === Phase 8: Import Dataset ===
+# === Phase 7: Import Dataset ===
 echo "🐍 匯入 Dataset"
 cd ../dataset
 source ../../.venv/bin/activate
